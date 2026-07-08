@@ -329,7 +329,7 @@
 
 <header>
   <h1>💪 Workout & Macro Tracker</h1>
-  <p>All data is saved in your browser automatically.</p>
+  <p>All data is saved in your browser automatically. Turn on Cloud Sync in the History tab to share it across devices.</p>
 </header>
 
 <nav>
@@ -648,6 +648,28 @@
       <div id="macro-history"><p class="muted">No macro days logged yet.</p></div>
     </div>
     <div class="card">
+      <h2>☁️ Cloud Sync</h2>
+      <div id="sync-setup">
+        <p class="muted" style="margin-bottom:10px">Pick a sync name and enter the same name on your other devices to keep data in sync. Anyone using the same name shares the same save, so make it unique to you (e.g. jack-gym-2026). Data synced this way is not private.</p>
+        <div class="row">
+          <div style="flex:2">
+            <label>Sync name</label>
+            <input id="sync-name" placeholder="e.g. jack-gym-2026">
+          </div>
+          <div><button class="btn" id="sync-enable-btn">Enable</button></div>
+        </div>
+      </div>
+      <div id="sync-active" style="display:none">
+        <p style="font-size:14px">Syncing as <strong id="sync-name-label"></strong></p>
+        <p class="muted" id="sync-status" style="margin-top:4px">—</p>
+        <div class="row" style="margin-top:10px">
+          <div><button class="btn ghost" id="sync-now-btn" style="width:100%">Sync Now</button></div>
+          <div><button class="btn ghost" id="sync-off-btn" style="width:100%">Turn Off</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Data</h2>
       <div class="row">
         <div><button class="btn ghost" id="export-btn" style="width:100%">Export Backup</button></div>
@@ -711,20 +733,21 @@ function defaultReminders() {
 
 let data = loadData();
 
+// merge in fields added after the user first saved data
+function migrate(d) {
+  if (!d.creatine) d.creatine = {};
+  if (!d.creatineDose) d.creatineDose = 5;
+  if (!("profile" in d)) d.profile = null;
+  if (!d.quickFoods) d.quickFoods = DEFAULT_QUICK_FOODS.slice();
+  if (!d.reminders) d.reminders = defaultReminders();
+  if (!("ntfyTopic" in d.reminders)) d.reminders.ntfyTopic = "";
+  return d;
+}
+
 function loadData() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) {
-      const d = JSON.parse(raw);
-      // merge in fields added after the user first saved data
-      if (!d.creatine) d.creatine = {};
-      if (!d.creatineDose) d.creatineDose = 5;
-      if (!("profile" in d)) d.profile = null;
-      if (!d.quickFoods) d.quickFoods = DEFAULT_QUICK_FOODS.slice();
-      if (!d.reminders) d.reminders = defaultReminders();
-      if (!("ntfyTopic" in d.reminders)) d.reminders.ntfyTopic = "";
-      return d;
-    }
+    if (raw) return migrate(JSON.parse(raw));
   } catch (e) { console.error("Failed to load data", e); }
   return {
     workouts: [],          // {date, exercises:[{name, sets:[{weight, reps}]}]}
@@ -743,6 +766,7 @@ function loadData() {
 
 function save() {
   localStorage.setItem(STORE_KEY, JSON.stringify(data));
+  schedulePush();
 }
 
 /* ==================== HELPERS ==================== */
@@ -1953,10 +1977,158 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+/* ==================== CLOUD SYNC ==================== */
+// Shared Firebase Realtime Database — last write wins, one save slot per sync name.
+const SYNC_BASE = "https://workout-tracker-4c36f-default-rtdb.firebaseio.com/wt/";
+const SYNC_KEY = "workoutTrackerSync_v1";
+
+let sync = { name: "", lastSeenAt: 0 };
+try {
+  const s = JSON.parse(localStorage.getItem(SYNC_KEY));
+  if (s && s.name) sync = s;
+} catch (e) {}
+
+// Firebase keys can't contain . # $ [ ] /
+const cleanSyncName = n => n.trim().toLowerCase().replace(/[.#$\[\]\/\s]+/g, "-");
+const syncUrl = () => SYNC_BASE + encodeURIComponent(sync.name) + ".json";
+const saveSyncMeta = () => localStorage.setItem(SYNC_KEY, JSON.stringify(sync));
+
+function setSyncStatus(msg) {
+  const el = $("sync-status");
+  if (el) el.textContent = msg;
+}
+
+let pushTimer = null;
+function schedulePush() {
+  if (!sync.name) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushToCloud, 1500);
+}
+
+async function pushToCloud(keepalive) {
+  if (!sync.name) return;
+  clearTimeout(pushTimer);
+  pushTimer = null;
+  try {
+    setSyncStatus("Syncing…");
+    const updatedAt = Date.now();
+    // data is stored as a JSON string because Firebase forbids . # $ [ ] / in keys
+    const res = await fetch(syncUrl(), {
+      method: "PUT",
+      body: JSON.stringify({ updatedAt, j: JSON.stringify(data) }),
+      keepalive: !!keepalive
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    sync.lastSeenAt = updatedAt;
+    saveSyncMeta();
+    setSyncStatus("Synced " + new Date(updatedAt).toLocaleTimeString());
+  } catch (e) {
+    setSyncStatus("Sync failed — will retry on next change");
+  }
+}
+
+async function pullFromCloud() {
+  if (!sync.name) return;
+  try {
+    setSyncStatus("Checking cloud…");
+    const res = await fetch(syncUrl());
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const cloud = await res.json();
+    if (cloud && cloud.j && cloud.updatedAt > (sync.lastSeenAt || 0)) {
+      data = migrate(JSON.parse(cloud.j));
+      localStorage.setItem(STORE_KEY, JSON.stringify(data)); // persist without re-pushing
+      sync.lastSeenAt = cloud.updatedAt;
+      saveSyncMeta();
+      rerenderAll();
+      setSyncStatus("Updated from cloud " + new Date(cloud.updatedAt).toLocaleTimeString());
+    } else {
+      setSyncStatus(cloud ? "Up to date" : "Waiting for first sync");
+    }
+  } catch (e) {
+    setSyncStatus("Couldn't reach cloud (offline?)");
+  }
+}
+
+function rerenderAll() {
+  initProgramSelect();
+  renderWorkout();
+  renderMacros();
+  const active = document.querySelector("nav button.active").dataset.tab;
+  if (active === "progress") renderProgress();
+  if (active === "trends") renderTrends();
+  if (active === "reminders") renderRemindersTab();
+  if (active === "history") renderHistory();
+}
+
+function renderSyncCard() {
+  const on = !!sync.name;
+  $("sync-setup").style.display = on ? "none" : "";
+  $("sync-active").style.display = on ? "" : "none";
+  if (on) $("sync-name-label").textContent = sync.name;
+}
+
+const hasLocalData = () => data.workouts.length > 0 || Object.keys(data.macros).length > 0 || data.bodyweight.length > 0;
+
+$("sync-enable-btn").addEventListener("click", async () => {
+  const name = cleanSyncName($("sync-name").value);
+  if (!name) { alert("Enter a sync name first."); return; }
+  sync.name = name;
+  sync.lastSeenAt = 0;
+  try {
+    const res = await fetch(syncUrl());
+    const cloud = res.ok ? await res.json() : null;
+    if (cloud && cloud.j && hasLocalData()) {
+      const useCloud = confirm(
+        `A cloud save named "${name}" already exists.\n\n` +
+        "OK = load the cloud data onto this device (replaces what's here)\n" +
+        "Cancel = keep this device's data and overwrite the cloud copy"
+      );
+      if (useCloud) {
+        saveSyncMeta();
+        renderSyncCard();
+        await pullFromCloud();
+        return;
+      }
+    } else if (cloud && cloud.j) {
+      // nothing meaningful on this device — just adopt the cloud save
+      saveSyncMeta();
+      renderSyncCard();
+      await pullFromCloud();
+      return;
+    }
+  } catch (e) { /* offline — enable anyway, push will retry */ }
+  saveSyncMeta();
+  renderSyncCard();
+  pushToCloud();
+});
+
+$("sync-now-btn").addEventListener("click", async () => {
+  await pullFromCloud();
+  pushToCloud();
+});
+
+$("sync-off-btn").addEventListener("click", () => {
+  sync = { name: "", lastSeenAt: 0 };
+  saveSyncMeta();
+  renderSyncCard();
+});
+
+// catch changes made on other devices when returning to the app
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (pushTimer) pushToCloud(true); // flush pending push before the tab is frozen
+  } else {
+    pullFromCloud();
+  }
+});
+setInterval(() => { if (!document.hidden) pullFromCloud(); }, 60000);
+
 /* ==================== INIT ==================== */
 initProgramSelect();
 renderWorkout();
 renderMacros();
+renderSyncCard();
+pullFromCloud();
 </script>
 </body>
 </html>
