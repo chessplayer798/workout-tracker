@@ -323,6 +323,47 @@
     nav button { padding: 10px 8px; font-size: 13px; }
     main { padding: 14px; }
   }
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 10, 15, .65);
+    backdrop-filter: blur(3px);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 14px;
+    z-index: 100;
+  }
+  .modal-overlay[hidden] { display: none; }
+  @media (min-width: 520px) {
+    .modal-overlay { align-items: center; }
+  }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 22px 20px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.5);
+    animation: fadeIn .2s ease;
+  }
+  .modal h2 { font-size: 18px; margin-bottom: 8px; }
+  .modal p { font-size: 14px; color: var(--muted); line-height: 1.5; margin-bottom: 14px; }
+  .modal input { margin-bottom: 10px; }
+  .modal .btn { width: 100%; margin-bottom: 8px; }
+  .linkish {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 14px;
+    text-decoration: underline;
+    cursor: pointer;
+    width: 100%;
+    padding: 8px;
+  }
+  .linkish:hover { color: var(--text); }
+  .sm-error { color: var(--danger) !important; }
 </style>
 </head>
 <body>
@@ -680,6 +721,43 @@
   </section>
 
 </main>
+
+<!-- first-run cloud sync setup -->
+<div class="modal-overlay" id="sync-modal" hidden>
+  <div class="modal">
+    <div id="sm-choice">
+      <h2>☁️ Sync your data?</h2>
+      <p>Keep your workouts and macros backed up and shared across your phone, tablet, and computer. Free, no account — you just pick a name.</p>
+      <button class="btn" id="sm-new-btn">Set up new sync</button>
+      <button class="btn ghost" id="sm-existing-btn">I already have a sync name</button>
+      <button class="linkish" id="sm-later-btn">Maybe later</button>
+    </div>
+    <div id="sm-new" hidden>
+      <h2>Pick a sync name</h2>
+      <p>This name is your key. Enter it on your other devices to load your data there — so make it unique to you. Anyone who types the same name shares the same save.</p>
+      <label>Sync name</label>
+      <input id="sm-new-name" placeholder="e.g. jack-gym-2026" autocomplete="off">
+      <p class="sm-error" id="sm-new-error" hidden></p>
+      <button class="btn" id="sm-new-go">Turn on sync</button>
+      <button class="linkish" id="sm-new-back">Back</button>
+    </div>
+    <div id="sm-existing" hidden>
+      <h2>Connect existing sync</h2>
+      <p>Enter the exact sync name you chose when you set up sync on your other device.</p>
+      <label>Sync name</label>
+      <input id="sm-existing-name" placeholder="e.g. jack-gym-2026" autocomplete="off">
+      <p class="sm-error" id="sm-existing-error" hidden></p>
+      <button class="btn" id="sm-existing-go">Connect</button>
+      <button class="linkish" id="sm-existing-back">Back</button>
+    </div>
+    <div id="sm-done" hidden>
+      <h2>✅ You're synced!</h2>
+      <p>Syncing as <strong id="sm-done-name" style="color:var(--text)"></strong></p>
+      <p>To add another device: open the app there, tap "I already have a sync name", and enter that same name. You can manage sync anytime in the History tab.</p>
+      <button class="btn" id="sm-done-btn">Done</button>
+    </div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -2111,6 +2189,7 @@ $("sync-enable-btn").addEventListener("click", async () => {
     }
   } catch (e) { /* offline — enable anyway, push will retry */ }
   saveSyncMeta();
+  localStorage.setItem(SYNC_PROMPT_KEY, "done");
   renderSyncCard();
   if (adoptCloud) await pullFromCloud();
   else pushToCloud();
@@ -2127,6 +2206,94 @@ $("sync-off-btn").addEventListener("click", () => {
   sync = { name: "", lastSeenAt: 0 };
   saveSyncMeta();
   renderSyncCard();
+});
+
+/* ---- first-run sync popup ---- */
+const SYNC_PROMPT_KEY = "workoutTrackerSyncPrompt_v1";
+
+function smShow(step) {
+  ["sm-choice", "sm-new", "sm-existing", "sm-done"].forEach(id => { $(id).hidden = id !== step; });
+}
+
+function smError(id, msg) {
+  const el = $(id);
+  el.textContent = msg;
+  el.hidden = !msg;
+}
+
+function maybeShowSyncModal() {
+  if (sync.name || localStorage.getItem(SYNC_PROMPT_KEY)) return;
+  smShow("sm-choice");
+  $("sync-modal").hidden = false;
+}
+
+function closeSyncModal() {
+  $("sync-modal").hidden = true;
+  localStorage.setItem(SYNC_PROMPT_KEY, "done");
+}
+
+async function fetchCloud(name) {
+  const res = await fetch(SYNC_BASE + encodeURIComponent(name) + ".json");
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+function activateSync(name) {
+  sync.name = name;
+  sync.lastSeenAt = 0;
+  saveSyncMeta();
+  localStorage.setItem(SYNC_PROMPT_KEY, "done");
+  renderSyncCard();
+  startStream();
+}
+
+$("sm-new-btn").addEventListener("click", () => { smShow("sm-new"); $("sm-new-name").focus(); });
+$("sm-existing-btn").addEventListener("click", () => { smShow("sm-existing"); $("sm-existing-name").focus(); });
+$("sm-later-btn").addEventListener("click", closeSyncModal);
+$("sm-new-back").addEventListener("click", () => smShow("sm-choice"));
+$("sm-existing-back").addEventListener("click", () => smShow("sm-choice"));
+$("sm-done-btn").addEventListener("click", closeSyncModal);
+
+$("sm-new-go").addEventListener("click", async () => {
+  const name = cleanSyncName($("sm-new-name").value);
+  if (!name) { smError("sm-new-error", "Type a name first."); return; }
+  smError("sm-new-error", "");
+  try {
+    const cloud = await fetchCloud(name);
+    if (cloud && cloud.j) {
+      smError("sm-new-error", 'That name is already in use — pick something more unique, or go back and tap "I already have a sync name" if it\'s yours.');
+      return;
+    }
+  } catch (e) {
+    smError("sm-new-error", "Couldn't reach the cloud — check your connection and try again.");
+    return;
+  }
+  activateSync(name);
+  pushToCloud();
+  $("sm-done-name").textContent = name;
+  smShow("sm-done");
+});
+
+$("sm-existing-go").addEventListener("click", async () => {
+  const name = cleanSyncName($("sm-existing-name").value);
+  if (!name) { smError("sm-existing-error", "Type your sync name first."); return; }
+  smError("sm-existing-error", "");
+  let cloud;
+  try {
+    cloud = await fetchCloud(name);
+  } catch (e) {
+    smError("sm-existing-error", "Couldn't reach the cloud — check your connection and try again.");
+    return;
+  }
+  if (!cloud || !cloud.j) {
+    smError("sm-existing-error", "No sync found under that name — double-check the spelling, and that sync is turned on, on your other device.");
+    return;
+  }
+  if (hasLocalData() && !confirm("This will replace the data on this device with the cloud copy. Continue?")) return;
+  activateSync(name);
+  await pullFromCloud();
+  $("sm-done-name").textContent = name;
+  smShow("sm-done");
 });
 
 // catch changes made on other devices when returning to the app
@@ -2147,6 +2314,7 @@ renderMacros();
 renderSyncCard();
 pullFromCloud();
 startStream();
+maybeShowSyncModal();
 </script>
 </body>
 </html>
