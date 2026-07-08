@@ -2027,6 +2027,19 @@ async function pushToCloud(keepalive) {
   }
 }
 
+// adopt cloud data if it's newer than what this device has seen
+function applyCloud(cloud) {
+  if (!cloud || !cloud.j || cloud.updatedAt <= (sync.lastSeenAt || 0)) return false;
+  sync.lastSeenAt = cloud.updatedAt;
+  saveSyncMeta();
+  if (cloud.j === JSON.stringify(data)) return false; // echo of our own push
+  data = migrate(JSON.parse(cloud.j));
+  localStorage.setItem(STORE_KEY, JSON.stringify(data)); // persist without re-pushing
+  rerenderAll();
+  setSyncStatus("Updated from cloud " + new Date(cloud.updatedAt).toLocaleTimeString());
+  return true;
+}
+
 async function pullFromCloud() {
   if (!sync.name) return;
   try {
@@ -2034,19 +2047,29 @@ async function pullFromCloud() {
     const res = await fetch(syncUrl());
     if (!res.ok) throw new Error("HTTP " + res.status);
     const cloud = await res.json();
-    if (cloud && cloud.j && cloud.updatedAt > (sync.lastSeenAt || 0)) {
-      data = migrate(JSON.parse(cloud.j));
-      localStorage.setItem(STORE_KEY, JSON.stringify(data)); // persist without re-pushing
-      sync.lastSeenAt = cloud.updatedAt;
-      saveSyncMeta();
-      rerenderAll();
-      setSyncStatus("Updated from cloud " + new Date(cloud.updatedAt).toLocaleTimeString());
-    } else {
-      setSyncStatus(cloud ? "Up to date" : "Waiting for first sync");
-    }
+    if (!applyCloud(cloud)) setSyncStatus(cloud ? "Up to date" : "Waiting for first sync");
   } catch (e) {
     setSyncStatus("Couldn't reach cloud (offline?)");
   }
+}
+
+// live updates: Firebase streams every change to the sync slot as server-sent events
+let stream = null;
+function startStream() {
+  stopStream();
+  if (!sync.name || typeof EventSource === "undefined") return;
+  stream = new EventSource(syncUrl());
+  const onEvent = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg && msg.path === "/" && msg.data) applyCloud(msg.data);
+    } catch (err) {}
+  };
+  stream.addEventListener("put", onEvent);
+  stream.addEventListener("patch", onEvent);
+}
+function stopStream() {
+  if (stream) { stream.close(); stream = null; }
 }
 
 function rerenderAll() {
@@ -2074,32 +2097,24 @@ $("sync-enable-btn").addEventListener("click", async () => {
   if (!name) { alert("Enter a sync name first."); return; }
   sync.name = name;
   sync.lastSeenAt = 0;
+  let adoptCloud = false;
   try {
     const res = await fetch(syncUrl());
     const cloud = res.ok ? await res.json() : null;
-    if (cloud && cloud.j && hasLocalData()) {
-      const useCloud = confirm(
+    if (cloud && cloud.j) {
+      // an existing cloud save wins unless this device also has data — then the user picks
+      adoptCloud = !hasLocalData() || confirm(
         `A cloud save named "${name}" already exists.\n\n` +
         "OK = load the cloud data onto this device (replaces what's here)\n" +
         "Cancel = keep this device's data and overwrite the cloud copy"
       );
-      if (useCloud) {
-        saveSyncMeta();
-        renderSyncCard();
-        await pullFromCloud();
-        return;
-      }
-    } else if (cloud && cloud.j) {
-      // nothing meaningful on this device — just adopt the cloud save
-      saveSyncMeta();
-      renderSyncCard();
-      await pullFromCloud();
-      return;
     }
   } catch (e) { /* offline — enable anyway, push will retry */ }
   saveSyncMeta();
   renderSyncCard();
-  pushToCloud();
+  if (adoptCloud) await pullFromCloud();
+  else pushToCloud();
+  startStream();
 });
 
 $("sync-now-btn").addEventListener("click", async () => {
@@ -2108,6 +2123,7 @@ $("sync-now-btn").addEventListener("click", async () => {
 });
 
 $("sync-off-btn").addEventListener("click", () => {
+  stopStream();
   sync = { name: "", lastSeenAt: 0 };
   saveSyncMeta();
   renderSyncCard();
@@ -2119,6 +2135,7 @@ document.addEventListener("visibilitychange", () => {
     if (pushTimer) pushToCloud(true); // flush pending push before the tab is frozen
   } else {
     pullFromCloud();
+    startStream(); // reconnect — mobile browsers kill the stream while the tab is frozen
   }
 });
 setInterval(() => { if (!document.hidden) pullFromCloud(); }, 60000);
@@ -2129,6 +2146,7 @@ renderWorkout();
 renderMacros();
 renderSyncCard();
 pullFromCloud();
+startStream();
 </script>
 </body>
 </html>
