@@ -534,6 +534,7 @@
         <span><i style="background:var(--protein)"></i> Protein g (right axis)</span>
         <span><i class="dash"></i> Targets</span>
         <span>💪 Workout day</span>
+        <span>🏃 Cardio day</span>
       </div>
       <div style="position:relative">
         <canvas id="trends-chart" height="300"></canvas>
@@ -1360,12 +1361,15 @@ function trendDays(n) {
     d.setDate(d.getDate() - i);
     const key = d.toLocaleDateString("en-CA");
     const totals = dayTotals(key);
+    const dayCardio = data.cardio.filter(c => c.date === key);
     days.push({
       key,
       cal: totals.cal,
       protein: totals.protein,
       logged: !!(data.macros[key] && data.macros[key].entries.length),
       workout: data.workouts.some(w => w.date === key),
+      cardioMin: dayCardio.reduce((a, c) => a + c.minutes, 0),
+      cardioCal: dayCardio.reduce((a, c) => a + (c.cal || 0), 0),
       creatine: !!data.creatine[key]
     });
   }
@@ -1375,7 +1379,7 @@ function trendDays(n) {
 function renderTrends() {
   const n = +$("trends-range").value;
   trendData = trendDays(n);
-  const any = trendData.some(d => d.logged || d.workout);
+  const any = trendData.some(d => d.logged || d.workout || d.cardioMin);
   $("trends-empty").style.display = any ? "none" : "block";
   $("trends-chart").style.display = any ? "block" : "none";
   if (any) drawTrendsChart($("trends-chart"), trendData);
@@ -1384,6 +1388,7 @@ function renderTrends() {
   const avg = arr => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
   const pHits = logged.filter(d => d.protein >= data.targets.protein).length;
   const workouts = trendData.filter(d => d.workout).length;
+  const cardioMin = trendData.reduce((a, d) => a + d.cardioMin, 0);
   const creatineDays = trendData.filter(d => d.creatine).length;
   $("trends-summary").innerHTML = `
     <h2>Last ${n} Days at a Glance</h2>
@@ -1392,6 +1397,7 @@ function renderTrends() {
       <div class="stat"><div class="num">${avg(logged.map(d => d.protein))}g</div><div class="lbl">Avg Protein*</div></div>
       <div class="stat"><div class="num">${pHits}/${logged.length}</div><div class="lbl">Protein Target Hit</div></div>
       <div class="stat"><div class="num">${workouts}</div><div class="lbl">Workouts</div></div>
+      <div class="stat"><div class="num">${Math.round(cardioMin)}</div><div class="lbl">Cardio Min</div></div>
       <div class="stat"><div class="num">${creatineDays}/${n}</div><div class="lbl">Creatine Days</div></div>
     </div>
     <p class="muted" style="margin-top:10px">*Averaged over the ${logged.length} day${logged.length === 1 ? "" : "s"} you logged food.</p>`;
@@ -1422,11 +1428,15 @@ function drawTrendsChart(canvas, days) {
   const yCal = v => padT + (1 - v / calMax) * plotH;
   const yP = v => padT + (1 - v / pMax) * plotH;
 
-  // workout day highlight bands
+  // workout / cardio day highlight bands
   const band = Math.min(n > 1 ? plotW / (n - 1) / 2 : plotW / 2, 13);
   days.forEach((d, i) => {
     if (d.workout) {
       ctx.fillStyle = "rgba(79,140,255,.09)";
+      ctx.fillRect(x(i) - band, padT, band * 2, plotH);
+    }
+    if (d.cardioMin) {
+      ctx.fillStyle = "rgba(251,191,36,.08)";
       ctx.fillRect(x(i) - band, padT, band * 2, plotH);
     }
   });
@@ -1480,7 +1490,10 @@ function drawTrendsChart(canvas, days) {
   ctx.textAlign = "center";
   const step = Math.ceil(n / 8);
   days.forEach((d, i) => {
-    if (d.workout) { ctx.font = "12px sans-serif"; ctx.fillText("💪", x(i), cssH - 26); }
+    ctx.font = "12px sans-serif";
+    if (d.workout && d.cardioMin) { ctx.fillText("💪", x(i) - 7, cssH - 26); ctx.fillText("🏃", x(i) + 7, cssH - 26); }
+    else if (d.workout) { ctx.fillText("💪", x(i), cssH - 26); }
+    else if (d.cardioMin) { ctx.fillText("🏃", x(i), cssH - 26); }
     if (i % step === 0 || i === n - 1) {
       ctx.fillStyle = "#9aa0b0";
       ctx.font = "10px sans-serif";
@@ -1501,7 +1514,7 @@ $("trends-chart").addEventListener("mousemove", e => {
   const tip = $("trends-tip");
   tip.innerHTML = `<strong>${fmtDate(d.key)}</strong>
     ${d.logged ? `🔵 ${Math.round(d.cal).toLocaleString()} cal<br>🟢 ${Math.round(d.protein)}g protein` : "No food logged"}
-    ${d.workout ? "<br>💪 Worked out" : ""}${d.creatine ? "<br>💊 Creatine taken" : ""}`;
+    ${d.workout ? "<br>💪 Worked out" : ""}${d.cardioMin ? `<br>🏃 ${Math.round(d.cardioMin)} min cardio (~${Math.round(d.cardioCal)} cal)` : ""}${d.creatine ? "<br>💊 Creatine taken" : ""}`;
   tip.style.display = "block";
   const tipW = tip.offsetWidth;
   tip.style.left = Math.max(0, Math.min(rect.width - tipW, relX - tipW / 2)) + "px";
