@@ -421,6 +421,33 @@
     <div class="card" id="finish-card" style="display:none">
       <button class="btn green" id="finish-workout-btn" style="width:100%">✓ Finish & Save Workout</button>
     </div>
+
+    <div class="card">
+      <h2>🏃 Cardio</h2>
+      <div class="row">
+        <div style="flex:1.4">
+          <label>Activity</label>
+          <select id="cardio-type">
+            <option>Run</option>
+            <option>Walk</option>
+            <option>Cycle</option>
+            <option>Swim</option>
+            <option>Row</option>
+            <option>Elliptical</option>
+            <option>Stairs</option>
+            <option>HIIT</option>
+            <option>Sports</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div><label>Minutes</label><input type="number" id="cardio-min" min="1" placeholder="30"></div>
+        <div><label>Miles (opt.)</label><input type="number" id="cardio-dist" step="0.1" min="0" placeholder="—"></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div><button class="btn" id="cardio-btn" style="width:100%">Log Cardio</button></div>
+      </div>
+      <div id="cardio-today" style="margin-top:10px"></div>
+    </div>
   </section>
 
   <!-- ============ PROGRESS TAB ============ -->
@@ -460,6 +487,22 @@
       </div>
       <canvas id="bodyweight-chart" height="200"></canvas>
       <p class="muted" id="bw-empty" style="display:none; text-align:center; padding:14px 0">No body weight entries yet.</p>
+    </div>
+    <div class="card">
+      <h2>🏃 Cardio</h2>
+      <div class="stat-grid" id="cardio-stats" style="margin-bottom:12px"></div>
+      <div class="row" style="margin-bottom:12px">
+        <div>
+          <label>Metric</label>
+          <select id="cardio-metric">
+            <option value="minutes">Minutes per day</option>
+            <option value="distance">Miles per day</option>
+            <option value="cal">Calories burned per day</option>
+          </select>
+        </div>
+      </div>
+      <canvas id="cardio-chart" height="200"></canvas>
+      <p class="muted" id="cardio-empty" style="display:none; text-align:center; padding:14px 0">No cardio logged yet.</p>
     </div>
   </section>
 
@@ -685,6 +728,10 @@
       <div id="workout-history"><p class="muted">No workouts saved yet.</p></div>
     </div>
     <div class="card">
+      <h2>Cardio History</h2>
+      <div id="cardio-history"><p class="muted">No cardio logged yet.</p></div>
+    </div>
+    <div class="card">
       <h2>Macro History (last 14 days)</h2>
       <div id="macro-history"><p class="muted">No macro days logged yet.</p></div>
     </div>
@@ -813,6 +860,7 @@ let data = loadData();
 
 // merge in fields added after the user first saved data
 function migrate(d) {
+  if (!d.cardio) d.cardio = [];
   if (!d.creatine) d.creatine = {};
   if (!d.creatineDose) d.creatineDose = 5;
   if (!("profile" in d)) d.profile = null;
@@ -829,6 +877,7 @@ function loadData() {
   } catch (e) { console.error("Failed to load data", e); }
   return {
     workouts: [],          // {date, exercises:[{name, sets:[{weight, reps}]}]}
+    cardio: [],            // {date, type, minutes, distance?, cal}
     macros: {},            // { "2026-06-09": { entries:[{name,cal,protein,carbs,fat}] } }
     targets: { cal: 2500, protein: 180, carbs: 250, fat: 80 },
     bodyweight: [],        // {date, weight}
@@ -902,6 +951,7 @@ $("workout-date").value = currentWorkout.date;
 $("workout-date").addEventListener("change", () => {
   currentWorkout.date = $("workout-date").value || todayStr();
   saveCurrent();
+  renderCardioToday();
 });
 
 function initProgramSelect() {
@@ -1047,6 +1097,65 @@ $("finish-workout-btn").addEventListener("click", () => {
   alert("Workout saved! 💪 Check the Progress tab to see your gains.");
 });
 
+/* ==================== CARDIO ==================== */
+// MET values per activity (moderate intensity), used to estimate calories burned
+const CARDIO_METS = {
+  Run: 9.8, Walk: 3.5, Cycle: 7.5, Swim: 7.0, Row: 7.0,
+  Elliptical: 5.5, Stairs: 8.0, HIIT: 8.5, Sports: 6.5, Other: 5.0
+};
+
+function currentWeightLbs() {
+  if (data.bodyweight.length) return data.bodyweight[data.bodyweight.length - 1].weight;
+  if (data.profile && data.profile.weightLbs) return data.profile.weightLbs;
+  return 170;
+}
+
+function cardioCal(type, minutes) {
+  const met = CARDIO_METS[type] || 5;
+  const kg = currentWeightLbs() * 0.4536;
+  return Math.round(met * 3.5 * kg / 200 * minutes);
+}
+
+function cardioLine(c) {
+  return `<strong>${c.minutes}</strong> min${c.distance ? ` · <strong>${c.distance}</strong> mi` : ""} · ~${c.cal} cal`;
+}
+
+$("cardio-btn").addEventListener("click", () => {
+  const type = $("cardio-type").value;
+  const minutes = parseFloat($("cardio-min").value);
+  const distance = parseFloat($("cardio-dist").value);
+  if (isNaN(minutes) || minutes <= 0) { alert("Enter how many minutes of cardio you did."); return; }
+  const entry = { date: $("workout-date").value || todayStr(), type, minutes, cal: cardioCal(type, minutes) };
+  if (!isNaN(distance) && distance > 0) entry.distance = distance;
+  data.cardio.push(entry);
+  data.cardio.sort((a, b) => a.date.localeCompare(b.date));
+  save();
+  $("cardio-min").value = "";
+  $("cardio-dist").value = "";
+  renderCardioToday();
+});
+
+function renderCardioToday() {
+  const d = $("workout-date").value || todayStr();
+  const entries = data.cardio.map((c, i) => ({ c, i })).filter(x => x.c.date === d);
+  $("cardio-today").innerHTML = entries.length
+    ? entries.map(({ c, i }) => `<div class="set-row">
+        <span class="tag">${escapeHtml(c.type)}</span>
+        <span>${cardioLine(c)}</span>
+        <span style="flex:1"></span>
+        <button class="del-x" data-del-cardio="${i}" title="Delete">✕</button>
+      </div>`).join("")
+    : `<p class="muted">No cardio logged for this day.</p>`;
+}
+
+$("cardio-today").addEventListener("click", e => {
+  const del = e.target.closest("[data-del-cardio]");
+  if (!del) return;
+  data.cardio.splice(+del.dataset.delCardio, 1);
+  save();
+  renderCardioToday();
+});
+
 /* ==================== PROGRESS TAB ==================== */
 function exercisesWithData() {
   const names = new Set();
@@ -1078,7 +1187,40 @@ function renderProgress() {
 
   drawProgressChart();
   drawBodyweightChart();
+  renderCardioProgress();
 }
+
+function renderCardioProgress() {
+  const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
+  const thisWeek = data.cardio.filter(c => new Date(c.date) >= weekAgo);
+  const weekMin = thisWeek.reduce((a, c) => a + c.minutes, 0);
+  const totalMiles = data.cardio.reduce((a, c) => a + (c.distance || 0), 0);
+  const totalCal = data.cardio.reduce((a, c) => a + (c.cal || 0), 0);
+
+  $("cardio-stats").innerHTML = `
+    <div class="stat"><div class="num">${data.cardio.length}</div><div class="lbl">Sessions</div></div>
+    <div class="stat"><div class="num">${Math.round(weekMin)}</div><div class="lbl">Min This Week</div></div>
+    <div class="stat"><div class="num">${totalMiles % 1 ? totalMiles.toFixed(1) : totalMiles}</div><div class="lbl">Total Miles</div></div>
+    <div class="stat"><div class="num">${Math.round(totalCal).toLocaleString()}</div><div class="lbl">Cal Burned</div></div>`;
+
+  drawCardioChart();
+}
+
+function drawCardioChart() {
+  const metric = $("cardio-metric").value;
+  const canvas = $("cardio-chart");
+  const byDay = {};
+  data.cardio.forEach(c => {
+    const v = metric === "minutes" ? c.minutes : metric === "distance" ? (c.distance || 0) : (c.cal || 0);
+    byDay[c.date] = (byDay[c.date] || 0) + v;
+  });
+  const points = Object.keys(byDay).sort().map(d => ({ date: d, val: Math.round(byDay[d] * 10) / 10 })).filter(p => p.val > 0);
+  $("cardio-empty").style.display = points.length ? "none" : "block";
+  canvas.style.display = points.length ? "block" : "none";
+  if (points.length) drawLineChart(canvas, points, "#fbbf24", metric === "minutes" ? " min" : metric === "distance" ? " mi" : " cal");
+}
+
+$("cardio-metric").addEventListener("change", drawCardioChart);
 
 $("progress-exercise").addEventListener("change", drawProgressChart);
 $("progress-metric").addEventListener("change", drawProgressChart);
@@ -1981,6 +2123,22 @@ function renderHistory() {
     }).join("");
   }
 
+  // cardio
+  const cWrap = $("cardio-history");
+  if (!data.cardio.length) {
+    cWrap.innerHTML = `<p class="muted">No cardio logged yet.</p>`;
+  } else {
+    cWrap.innerHTML = data.cardio.map((c, i) => ({ c, i })).reverse().slice(0, 20).map(({ c, i }) =>
+      `<div class="food-row">
+        <div>
+          <div>${fmtDate(c.date)} — ${escapeHtml(c.type)}</div>
+          <div class="macros">${cardioLine(c)}</div>
+        </div>
+        <button class="del-x" data-del-cardio-h="${i}" title="Delete">✕</button>
+      </div>`
+    ).join("");
+  }
+
   // macros
   const mWrap = $("macro-history");
   const days = Object.keys(data.macros).sort().reverse().slice(0, 14);
@@ -2012,6 +2170,16 @@ $("workout-history").addEventListener("click", e => {
   }
   const item = e.target.closest(".history-item");
   if (item) item.classList.toggle("open");
+});
+
+$("cardio-history").addEventListener("click", e => {
+  const del = e.target.closest("[data-del-cardio-h]");
+  if (!del) return;
+  if (!confirm("Delete this cardio session?")) return;
+  data.cardio.splice(+del.dataset.delCardioH, 1);
+  save();
+  renderHistory();
+  renderCardioToday();
 });
 
 /* ==================== EXPORT / IMPORT ==================== */
@@ -2153,6 +2321,7 @@ function stopStream() {
 function rerenderAll() {
   initProgramSelect();
   renderWorkout();
+  renderCardioToday();
   renderMacros();
   const active = document.querySelector("nav button.active").dataset.tab;
   if (active === "progress") renderProgress();
@@ -2168,7 +2337,7 @@ function renderSyncCard() {
   if (on) $("sync-name-label").textContent = sync.name;
 }
 
-const hasLocalData = () => data.workouts.length > 0 || Object.keys(data.macros).length > 0 || data.bodyweight.length > 0;
+const hasLocalData = () => data.workouts.length > 0 || data.cardio.length > 0 || Object.keys(data.macros).length > 0 || data.bodyweight.length > 0;
 
 $("sync-enable-btn").addEventListener("click", async () => {
   const name = cleanSyncName($("sync-name").value);
@@ -2310,6 +2479,7 @@ setInterval(() => { if (!document.hidden) pullFromCloud(); }, 60000);
 /* ==================== INIT ==================== */
 initProgramSelect();
 renderWorkout();
+renderCardioToday();
 renderMacros();
 renderSyncCard();
 pullFromCloud();
