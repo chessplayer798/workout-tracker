@@ -436,6 +436,9 @@
             <option>Elliptical</option>
             <option>Stairs</option>
             <option>HIIT</option>
+            <option>Yoga</option>
+            <option>Pilates</option>
+            <option>Stretching</option>
             <option>Sports</option>
             <option>Other</option>
           </select>
@@ -444,7 +447,15 @@
         <div><label>Miles (opt.)</label><input type="number" id="cardio-dist" step="0.1" min="0" placeholder="—"></div>
       </div>
       <div class="row" style="margin-top:8px">
-        <div><button class="btn" id="cardio-btn" style="width:100%">Log Cardio</button></div>
+        <div>
+          <label>Intensity</label>
+          <select id="cardio-intensity">
+            <option value="Light">Light</option>
+            <option value="Moderate" selected>Moderate</option>
+            <option value="Hard">Hard</option>
+          </select>
+        </div>
+        <div style="align-self:flex-end"><button class="btn" id="cardio-btn" style="width:100%">Log Cardio</button></div>
       </div>
       <div id="cardio-today" style="margin-top:10px"></div>
     </div>
@@ -1101,8 +1112,12 @@ $("finish-workout-btn").addEventListener("click", () => {
 // MET values per activity (moderate intensity), used to estimate calories burned
 const CARDIO_METS = {
   Run: 9.8, Walk: 3.5, Cycle: 7.5, Swim: 7.0, Row: 7.0,
-  Elliptical: 5.5, Stairs: 8.0, HIIT: 8.5, Sports: 6.5, Other: 5.0
+  Elliptical: 5.5, Stairs: 8.0, HIIT: 8.5, Yoga: 3.0, Pilates: 3.5,
+  Stretching: 2.3, Sports: 6.5, Other: 5.0
 };
+
+// intensity scales the MET estimate (gentle yoga vs power yoga, easy spin vs race pace)
+const INTENSITY_MULT = { Light: 0.8, Moderate: 1, Hard: 1.25 };
 
 function currentWeightLbs() {
   if (data.bodyweight.length) return data.bodyweight[data.bodyweight.length - 1].weight;
@@ -1110,22 +1125,24 @@ function currentWeightLbs() {
   return 170;
 }
 
-function cardioCal(type, minutes) {
-  const met = CARDIO_METS[type] || 5;
+function cardioCal(type, minutes, intensity) {
+  const met = (CARDIO_METS[type] || 5) * (INTENSITY_MULT[intensity] || 1);
   const kg = currentWeightLbs() * 0.4536;
   return Math.round(met * 3.5 * kg / 200 * minutes);
 }
 
 function cardioLine(c) {
-  return `<strong>${c.minutes}</strong> min${c.distance ? ` · <strong>${c.distance}</strong> mi` : ""} · ~${c.cal} cal`;
+  const intensity = c.intensity && c.intensity !== "Moderate" ? ` · ${c.intensity.toLowerCase()}` : "";
+  return `<strong>${c.minutes}</strong> min${c.distance ? ` · <strong>${c.distance}</strong> mi` : ""}${intensity} · ~${c.cal} cal`;
 }
 
 $("cardio-btn").addEventListener("click", () => {
   const type = $("cardio-type").value;
   const minutes = parseFloat($("cardio-min").value);
   const distance = parseFloat($("cardio-dist").value);
+  const intensity = $("cardio-intensity").value;
   if (isNaN(minutes) || minutes <= 0) { alert("Enter how many minutes of cardio you did."); return; }
-  const entry = { date: $("workout-date").value || todayStr(), type, minutes, cal: cardioCal(type, minutes) };
+  const entry = { date: $("workout-date").value || todayStr(), type, minutes, intensity, cal: cardioCal(type, minutes, intensity) };
   if (!isNaN(distance) && distance > 0) entry.distance = distance;
   data.cardio.push(entry);
   data.cardio.sort((a, b) => a.date.localeCompare(b.date));
